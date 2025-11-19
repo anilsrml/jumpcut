@@ -1,0 +1,218 @@
+================================================================================
+                    JUMPCUT - TEKNİK DOKÜMANTASYON
+================================================================================
+
+PROJE ÖZETİ
+-----------
+Jumpcut, videolardaki uzun sessizlikleri otomatik olarak tespit edip kesen bir
+web servisidir. AssemblyAI API kullanarak video transkripti oluşturur ve 
+FFmpeg ile video işleme yapar.
+
+MİMARİ VE TEKNOLOJİLER
+----------------------
+
+1. BACKEND FRAMEWORK
+   - Flask (Python web framework)
+   - RESTful API tasarımı
+   - CORS desteği (Cross-Origin Resource Sharing)
+   - Maksimum dosya boyutu: 500MB
+
+2. DIŞ SERVİSLER
+   - AssemblyAI API: Video transkripti ve kelime zaman damgaları için
+   - FFmpeg: Video kesme ve birleştirme işlemleri için
+
+3. PROGRAMLAMA DİLİ VE KÜTÜPHANELER
+   - Python 3.11
+   - Flask: Web framework
+   - Flask-CORS: CORS desteği
+   - Requests: HTTP istekleri için
+   - python-dotenv: Environment variable yönetimi
+   - Werkzeug: Dosya yükleme ve güvenlik
+
+ÇALIŞMA PRENSİBİ
+----------------
+
+1. Video Yükleme
+   - Kullanıcı video dosyasını POST /process endpoint'ine gönderir
+   - Dosya geçici klasöre kaydedilir
+
+2. Transkript İşlemi
+   - Video AssemblyAI API'ye yüklenir
+   - API video transkripti oluşturur ve kelime zaman damgalarını döner
+   - Her kelime için başlangıç ve bitiş zamanı bilgisi alınır
+
+3. Sessizlik Tespiti
+   - Kelimeler arasındaki boşluklar analiz edilir
+   - 1 saniye (1000ms) ve üzeri boşluklar tespit edilir
+   - Bu boşluklar kesilecek bölümler olarak işaretlenir
+
+4. Video İşleme
+   - FFmpeg kullanılarak tespit edilen boşluklar kesilir
+   - Kalan segmentler birleştirilir
+   - İşlenmiş video kullanıcıya döndürülür
+
+5. Temizlik
+   - Geçici dosyalar otomatik olarak silinir
+
+DOCKER KULLANIMI
+----------------
+
+NEDEN DOCKER?
+-------------
+FFmpeg, sistem seviyesinde bir kütüphane olduğu için web servis ortamlarında
+doğrudan kurulumu zor olabilir. Docker kullanarak:
+- FFmpeg'i container içinde izole bir şekilde çalıştırıyoruz
+- Farklı ortamlarda tutarlı çalışma sağlıyoruz
+- Bağımlılık yönetimini kolaylaştırıyoruz
+
+DOCKERFILE YAPISI
+-----------------
+1. Base Image: python:3.11-slim (hafif Python imajı)
+
+2. FFmpeg Kurulumu:
+   - Statik binary olarak indirilir (apt-get gerektirmez)
+   - Python'un lzma modülü ile xz arşivi açılır
+   - /usr/local/bin/ dizinine kurulur
+   - Bu yaklaşım repository bağımlılığı olmadan çalışır
+
+3. Python Bağımlılıkları:
+   - requirements.txt dosyasından yüklenir
+   - Flask ve diğer kütüphaneler kurulur
+
+4. Uygulama:
+   - main.py dosyası container'a kopyalanır
+   - Port 5000 expose edilir
+   - Flask uygulaması başlatılır
+
+DOCKER COMPOSE
+--------------
+- Kolay çalıştırma ve yönetim için kullanılır
+- Port mapping: 5000:5000
+- Environment variables: .env dosyasından yüklenir
+- Volume: Geçici dosyalar için /tmp dizini
+- Restart policy: unless-stopped (otomatik yeniden başlatma)
+
+RENDER.COM KULLANIMI
+--------------------
+
+NEDEN RENDER.COM?
+-----------------
+- Ücretsiz tier ile hızlı deployment
+- Docker desteği
+- Otomatik HTTPS
+- Environment variable yönetimi
+- Kolay GitHub entegrasyonu
+
+RENDER DEPLOYMENT
+-----------------
+1. GitHub Repository Bağlantısı:
+   - Render.com GitHub repository'yi otomatik olarak algılar
+   - Dockerfile varsa otomatik olarak Docker build yapar
+
+2. Environment Variables:
+   - ASSEMBLYAI_API_KEY: Render dashboard'undan eklenir
+   - PORT: Render otomatik olarak set eder (genellikle 10000)
+
+3. Build Process:
+   - Dockerfile kullanılarak imaj oluşturulur
+   - FFmpeg statik binary olarak kurulur
+   - Python bağımlılıkları yüklenir
+
+4. Runtime:
+   - Container başlatılır
+   - Flask uygulaması Render'ın sağladığı port'ta çalışır
+   - HTTPS otomatik olarak yapılandırılır
+
+API ENDPOINT'LERİ
+-----------------
+
+1. GET /
+   - API bilgilerini döner
+   - Mevcut endpoint'leri listeler
+
+2. GET /health
+   - Sağlık kontrolü
+   - Uygulamanın çalışıp çalışmadığını kontrol eder
+
+3. POST /process
+   - Video işleme endpoint'i
+   - multipart/form-data formatında video dosyası bekler
+   - İşlenmiş videoyu döner
+   - Maksimum dosya boyutu: 500MB
+
+GÜVENLİK VE KONFİGÜRASYON
+--------------------------
+
+1. Environment Variables:
+   - ASSEMBLYAI_API_KEY: .env dosyasından okunur
+   - PORT: Render otomatik set eder, local'de varsayılan 5000
+
+2. Dosya Güvenliği:
+   - secure_filename kullanılarak dosya adları temizlenir
+   - Geçici dosyalar UUID ile benzersiz isimlendirilir
+   - İşlem sonrası otomatik temizlik
+
+3. CORS:
+   - Flask-CORS ile cross-origin isteklerine izin verilir
+   - Production'da spesifik domain'lere kısıtlanabilir
+
+SINIRLAMALAR VE NOTLAR
+----------------------
+
+1. Dosya Boyutu:
+   - Maksimum 500MB
+   - Render.com'un free tier'ında daha küçük limitler olabilir
+
+2. İşlem Süresi:
+   - Video uzunluğuna bağlı olarak 5-30 dakika sürebilir
+   - AssemblyAI API'nin transkript süresi değişkendir
+   - FFmpeg işleme süresi video boyutuna bağlıdır
+
+3. Sessizlik Eşiği:
+   - Varsayılan: 1 saniye (1000ms)
+   - Kod içinde değiştirilebilir
+
+4. Desteklenen Formatlar:
+   - MP4, AVI, MOV, MKV
+   - FFmpeg'in desteklediği tüm formatlar
+
+GELİŞTİRME ORTAMI
+-----------------
+
+1. Local Development:
+   - Docker Compose ile çalıştırılabilir
+   - .env dosyası ile API key yönetimi
+   - Port 5000'de çalışır
+
+2. Test:
+   - test_api.py scripti ile API test edilebilir
+   - Local ve production URL'leri destekler
+
+3. Deployment:
+   - GitHub'a push edildiğinde Render otomatik deploy eder
+   - Dockerfile kullanılarak build yapılır
+
+DOSYA YAPISI
+------------
+
+jumpcut-docker/
+├── main.py              # Flask uygulaması
+├── Dockerfile           # Docker imaj tanımı
+├── docker-compose.yml   # Docker Compose konfigürasyonu
+├── requirements.txt     # Python bağımlılıkları
+├── test_api.py         # API test scripti
+├── .env                # Environment variables (gitignore'da)
+├── .gitignore          # Git ignore dosyası
+└── README.md           # Kullanım dokümantasyonu
+
+SONUÇ
+-----
+Bu proje, Docker containerization ve cloud deployment (Render.com) kullanarak
+video işleme servisi sağlar. FFmpeg'in sistem bağımlılıklarını Docker ile
+çözerek, farklı ortamlarda tutarlı çalışma sağlar. Render.com ile kolay ve
+hızlı deployment imkanı sunar.
+
+================================================================================
+                            Son Güncelleme: 2025
+================================================================================
+
