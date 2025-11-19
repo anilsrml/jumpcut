@@ -19,7 +19,7 @@ BASE_URL = os.getenv("API_URL", "https://jumpcut.onrender.com")
 # BASE_URL = "http://localhost:5000"
 
 # Varsayılan video dosyası yolu
-DEFAULT_VIDEO_PATH = os.path.join(os.path.dirname(__file__), "inputvideo", "video7.mp4")
+DEFAULT_VIDEO_PATH = os.path.join(os.path.dirname(__file__), "inputvideo", "video8.mp4")
 
 # Output klasörü yolu
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputvideo")
@@ -102,9 +102,11 @@ def test_process_endpoint(video_path=None):
         with open(video_path, 'rb') as f:
             files = {'video': (os.path.basename(video_path), f, 'video/mp4')}
             print("\nVideo yükleniyor ve işleniyor... (Bu biraz zaman alabilir)")
-            # Render.com için timeout'u artırdık (30 dakika)
-            timeout_value = 120 if "render.com" in BASE_URL else 600
-            print(f"Timeout: {timeout_value//60} dakika")
+            # Render.com için timeout'u artırdık (30 dakika = 1800 saniye)
+            # Video işleme: yükleme + transkript + FFmpeg işleme süresi uzun olabilir
+            timeout_value = 1800 if "render.com" in BASE_URL else 600
+            timeout_minutes = timeout_value // 60
+            print(f"Timeout: {timeout_minutes} dakika ({timeout_value} saniye)")
             response = requests.post(f"{BASE_URL}/process", files=files, timeout=timeout_value)
         
         if response.status_code == 200:
