@@ -1,0 +1,32 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Input/Output dosyaları
+input/
+output/
+inputvideo/
+outputvideo/
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Docker
+.dockerignore
+
+# Test çıktıları
+output_*.mp4
+
