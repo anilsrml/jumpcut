@@ -17,8 +17,9 @@ dist/
 # Input/Output dosyaları
 input/
 output/
-inputvideo/
-outputvideo/
+# inputvideo/ ve outputvideo/ klasörleri GitHub'a eklenecek
+# inputvideo/
+# outputvideo/
 *.mp4
 *.avi
 *.mov
