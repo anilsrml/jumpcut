@@ -12,11 +12,24 @@ import uuid
 # .env dosyasını yükle
 load_dotenv()
 
+"""
+Jumpcut Video Processing API
+Render.com için optimize edilmiş Flask uygulaması
+
+Özellikler:
+- Çoklu video işleme (sınırsız sayıda video)
+- AssemblyAI ile otomatik transkript
+- Jumpcut işleme (sessizlik kesme)
+- FFmpeg ile video birleştirme
+- Render.com uyumlu (geçici dosya sistemi kullanır)
+"""
+
 app = Flask(__name__)
 CORS(app)  # CORS desteği
 
 # Konfigürasyon
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max dosya boyutu
+# Render.com için geçici klasör kullan (kalıcı dosya sistemi yok)
 app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
 
 base_url = "https://api.assemblyai.com"
@@ -159,15 +172,59 @@ def process_video(video_path, output_path):
         else:
             time.sleep(3)
 
+def concatenate_videos(video_paths, output_path):
+    """Birden fazla videoyu FFmpeg ile birleştirir"""
+    if not video_paths:
+        raise ValueError("Birleştirilecek video dosyası bulunamadı")
+    
+    # Geçici dosya listesi oluştur
+    list_file_path = os.path.join(tempfile.gettempdir(), f"concat_list_{uuid.uuid4().hex}.txt")
+    
+    try:
+        # FFmpeg concat için dosya listesi oluştur
+        with open(list_file_path, 'w', encoding='utf-8') as f:
+            for video_path in video_paths:
+                if not os.path.exists(video_path):
+                    raise FileNotFoundError(f"Video dosyası bulunamadı: {video_path}")
+                # FFmpeg concat formatı: file 'path/to/video.mp4'
+                f.write(f"file '{os.path.abspath(video_path)}'\n")
+        
+        # FFmpeg ile videoları birleştir
+        ffmpeg_cmd = [
+            'ffmpeg',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', list_file_path,
+            '-c', 'copy',
+            '-y',
+            output_path
+        ]
+        
+        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise RuntimeError(f"Video birleştirme hatası: {result.stderr}")
+        
+        print(f"Videolar başarıyla birleştirildi: {output_path}")
+        return True
+    
+    finally:
+        # Geçici liste dosyasını temizle
+        if os.path.exists(list_file_path):
+            try:
+                os.remove(list_file_path)
+            except:
+                pass
+
 @app.route('/')
 def index():
     return jsonify({
         "message": "Jumpcut Video Processing API",
-        "version": "1.0",
+        "version": "2.0",
         "endpoints": {
             "/": "API bilgileri",
             "/health": "Sağlık kontrolü",
-            "/process": "Video işleme (POST)"
+            "/process": "Çoklu video işleme ve birleştirme (POST) - videos field'ı ile birden fazla video gönderilebilir"
         }
     })
 
@@ -177,32 +234,70 @@ def health():
 
 @app.route('/process', methods=['POST'])
 def process():
-    """Video işleme endpoint'i"""
-    if 'video' not in request.files:
-        return jsonify({"error": "Video dosyası bulunamadı"}), 400
+    """Çoklu video işleme ve birleştirme endpoint'i - Kaç video yüklenirse yüklensin işler"""
+    # Hem 'videos' (yeni format) hem 'video' (eski format) desteği
+    if 'videos' in request.files:
+        files = request.files.getlist('videos')
+    elif 'video' in request.files:
+        # Eski format desteği - tek video'yu liste olarak al
+        files = [request.files['video']]
+    else:
+        return jsonify({"error": "Video dosyaları bulunamadı. 'videos' field'ı ile video gönderin."}), 400
     
-    file = request.files['video']
-    if file.filename == '':
+    if not files or len(files) == 0:
         return jsonify({"error": "Dosya seçilmedi"}), 400
     
+    # Render.com için geçici klasör kullan (kalıcı dosya sistemi yok)
+    output_dir = app.config['UPLOAD_FOLDER']
+    
     # Geçici dosya yolları
-    file_id = str(uuid.uuid4())
-    input_path = os.path.join(app.config['UPLOAD_FOLDER'], f"input_{file_id}.mp4")
-    output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"output_{file_id}.mp4")
+    temp_inputs = []
+    temp_outputs = []
+    final_output_path = None
     
     try:
-        # Dosyayı kaydet
-        file.save(input_path)
+        # Dosyaları kaydet ve işle
+        valid_files = [f for f in files if f.filename != '']
         
-        # Video işle
-        process_video(input_path, output_path)
+        if len(valid_files) == 0:
+            return jsonify({"error": "Geçerli video dosyası bulunamadı"}), 400
         
-        # İşlenmiş videoyu gönder
+        print(f"Toplam {len(valid_files)} video işlenecek...")
+        
+        for idx, file in enumerate(valid_files, start=1):
+            file_id = str(uuid.uuid4())
+            input_path = os.path.join(app.config['UPLOAD_FOLDER'], f"input_{file_id}.mp4")
+            file.save(input_path)
+            temp_inputs.append(input_path)
+            
+            output_filename = f"output_{file_id}_{idx}.mp4"
+            output_path = os.path.join(output_dir, output_filename)
+            temp_outputs.append(output_path)
+            
+            # Video işle
+            print(f"[{idx}/{len(valid_files)}] Video işleniyor: {file.filename}")
+            process_video(input_path, output_path)
+        
+        # Videoları birleştir
+        final_file_id = str(uuid.uuid4())
+        final_output_path = os.path.join(output_dir, f"final_output_{final_file_id}.mp4")
+        
+        if len(temp_outputs) > 1:
+            print(f"\n{len(temp_outputs)} video birleştiriliyor...")
+            concatenate_videos(temp_outputs, final_output_path)
+        else:
+            # Tek video varsa, final_output olarak kopyala
+            import shutil
+            shutil.copy2(temp_outputs[0], final_output_path)
+        
+        print(f"✓ Final çıktı hazır: {final_output_path}")
+        
+        # Final videoyu gönder
         return send_file(
-            output_path,
+            final_output_path,
             mimetype='video/mp4',
             as_attachment=True,
-            download_name=f"processed_{file.filename}"
+            download_name="final_output.mp4"
         )
     
     except Exception as e:
@@ -210,7 +305,11 @@ def process():
     
     finally:
         # Geçici dosyaları temizle
-        for path in [input_path, output_path]:
+        cleanup_paths = temp_inputs + temp_outputs
+        if final_output_path:
+            cleanup_paths.append(final_output_path)
+        
+        for path in cleanup_paths:
             if os.path.exists(path):
                 try:
                     os.remove(path)
