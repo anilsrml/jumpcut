@@ -8,7 +8,10 @@ import requests
 import json
 import sys
 import os
+import time
+import threading
 from pathlib import Path
+from datetime import datetime
 
 # API base URL
 # Render URL (production) veya local URL (development) kullanabilirsiniz
@@ -24,8 +27,8 @@ BASE_URL = os.getenv("API_URL", "http://localhost:5000")
 # İşlenecek video yolları - Kaç video tanımlarsanız o kadar işlem yapılır
 # Minimum 1 video, maksimum sınır yok
 VIDEO_PATHS = [
-    os.path.join(os.path.dirname(__file__), "inputvideo", "video7.mp4"),
     os.path.join(os.path.dirname(__file__), "inputvideo", "video7.mp4")
+    
 ]
 # ============================================================================
 
@@ -45,6 +48,62 @@ def print_success(text):
 def print_error(text):
     """Hata mesajı"""
     print(f"✗ {text}")
+
+def print_log(log_entry):
+    """Log mesajını formatlı şekilde yazdır"""
+    level = log_entry.get('level', 'INFO')
+    message = log_entry.get('message', '')
+    timestamp = log_entry.get('timestamp', '')
+    metadata = log_entry.get('metadata', {})
+    
+    # Level sembolleri
+    level_symbols = {
+        'INFO': 'ℹ️',
+        'SUCCESS': '✅',
+        'WARNING': '⚠️',
+        'ERROR': '❌'
+    }
+    symbol = level_symbols.get(level, '•')
+    
+    # Konsol çıktısı formatla
+    log_msg = f"[{timestamp}] {symbol} [{level}] {message}"
+    
+    # Metadata varsa ekle
+    if metadata:
+        metadata_strs = []
+        for key, value in metadata.items():
+            if key not in ['job_id']:
+                metadata_strs.append(f"{key}={value}")
+        if metadata_strs:
+            log_msg += f" | {' | '.join(metadata_strs)}"
+    
+    print(log_msg)
+
+def poll_logs(job_id, stop_event, base_url):
+    """Belirli bir job'ın loglarını polling yaparak konsola yazdır"""
+    last_log_count = 0
+    
+    while not stop_event.is_set():
+        try:
+            response = requests.get(f"{base_url}/logs/{job_id}", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                logs = data.get('logs', [])
+                
+                # Yeni logları yazdır
+                if len(logs) > last_log_count:
+                    new_logs = logs[last_log_count:]
+                    for log_entry in new_logs:
+                        print_log(log_entry)
+                    last_log_count = len(logs)
+            
+            time.sleep(2)  # 2 saniyede bir kontrol et
+        except requests.exceptions.RequestException:
+            # Bağlantı hatası durumunda sessizce devam et
+            time.sleep(2)
+        except Exception:
+            # Diğer hataları görmezden gel
+            time.sleep(2)
 
 def test_root_endpoint():
     """Ana endpoint'i test et"""
@@ -134,22 +193,136 @@ def test_process_endpoint(video_paths=None):
         timeout_minutes = timeout_value // 60
         print(f"Timeout: {timeout_minutes} dakika ({timeout_value} saniye)")
         print(f"Endpoint: {BASE_URL}/process")
+        print("\n" + "=" * 60)
+        print("  LOG MESAJLARI")
+        print("=" * 60 + "\n")
         
-        response = requests.post(f"{BASE_URL}/process", files=files, timeout=timeout_value)
+        # İşlem başlamadan önce mevcut job'ları al
+        initial_jobs = {}
+        try:
+            status_response = requests.get(f"{BASE_URL}/status", timeout=5)
+            if status_response.status_code == 200:
+                jobs_data = status_response.json()
+                initial_jobs = jobs_data.get('jobs', {})
+        except:
+            pass
         
-        if response.status_code == 200:
+        # Log polling için thread başlat
+        stop_logging = threading.Event()
+        log_thread = None
+        job_id = None
+        last_log_count = {'count': 0}  # Thread-safe için dict kullan
+        
+        def poll_logs_thread():
+            """Arka planda log polling yap"""
+            nonlocal job_id, last_log_count
+            while not stop_logging.is_set() and job_id:
+                try:
+                    log_response = requests.get(f"{BASE_URL}/logs/{job_id}", timeout=5)
+                    if log_response.status_code == 200:
+                        logs_data = log_response.json()
+                        logs = logs_data.get('logs', [])
+                        
+                        # Yeni logları yazdır
+                        if len(logs) > last_log_count['count']:
+                            new_logs = logs[last_log_count['count']:]
+                            for log_entry in new_logs:
+                                print_log(log_entry)
+                            last_log_count['count'] = len(logs)
+                    
+                    time.sleep(2)  # 2 saniyede bir kontrol et
+                except:
+                    time.sleep(2)
+        
+        # İşlemi başlat (stream=False, normal blocking request)
+        response = None
+        
+        try:
+            # İşlemi başlat - bu uzun sürebilir
+            response = requests.post(f"{BASE_URL}/process", files=files, timeout=timeout_value)
+        except requests.exceptions.Timeout:
+            stop_logging.set()
+            print_error("İstek zaman aşımına uğradı. Video işleme çok uzun sürdü.")
+            return False
+        except Exception as e:
+            stop_logging.set()
+            print_error(f"Hata: {str(e)}")
+            return False
+        
+        # Hata durumunda job_id'yi al ve logları göster
+        if response.status_code != 200:
+            stop_logging.set()
+            try:
+                error_data = response.json()
+                job_id = error_data.get('job_id')
+                if job_id:
+                    print(f"\nJob ID: {job_id}")
+                    print("Hata logları:\n")
+                    log_response = requests.get(f"{BASE_URL}/logs/{job_id}")
+                    if log_response.status_code == 200:
+                        logs_data = log_response.json()
+                        for log_entry in logs_data.get('logs', []):
+                            print_log(log_entry)
+            except:
+                pass
+            return False
+        
+        # Başarılı durumda - yeni job'ı bul ve loglarını göster
+        try:
+            time.sleep(0.5)  # Job oluşması için kısa bekleme
+            
+            status_response = requests.get(f"{BASE_URL}/status", timeout=5)
+            if status_response.status_code == 200:
+                jobs_data = status_response.json()
+                current_jobs = jobs_data.get('jobs', {})
+                
+                # Yeni job'ı bul
+                for jid in current_jobs:
+                    if jid not in initial_jobs:
+                        job_id = jid
+                        break
+                
+                # Eğer yeni job bulunamadıysa, en son job'ı al
+                if not job_id and current_jobs:
+                    latest_job = None
+                    latest_time = None
+                    for jid, job_data in current_jobs.items():
+                        created_at = job_data.get('created_at', '')
+                        if latest_time is None or created_at > latest_time:
+                            latest_time = created_at
+                            latest_job = jid
+                    job_id = latest_job
+                
+                # Job bulunduysa tüm loglarını göster
+                if job_id:
+                    log_response = requests.get(f"{BASE_URL}/logs/{job_id}")
+                    if log_response.status_code == 200:
+                        logs_data = log_response.json()
+                        print(f"\nJob ID: {job_id}\n")
+                        for log_entry in logs_data.get('logs', []):
+                            print_log(log_entry)
+        except Exception as e:
+            # Log alma hatası durumunda devam et
+            pass
+        
+        stop_logging.set()
+        
+        # Response içeriğini oku
+        response_content = response.content
+        
+        if response.status_code == 200 and len(response_content) > 0:
             print_success(f"Status Code: {response.status_code}")
             
             # Output klasörü yoksa oluştur
             if not os.path.exists(OUTPUT_DIR):
                 os.makedirs(OUTPUT_DIR, exist_ok=True)
-                print(f"Output klasörü oluşturuldu: {OUTPUT_DIR}")
+                print(f"\nOutput klasörü oluşturuldu: {OUTPUT_DIR}")
             
             output_path = os.path.join(OUTPUT_DIR, "final_output.mp4")
             
             print(f"\nFinal video kaydediliyor: {output_path}")
             with open(output_path, 'wb') as f:
-                f.write(response.content)
+                f.write(response_content)
             
             if os.path.exists(output_path):
                 output_size = os.path.getsize(output_path) / (1024 * 1024)  # MB
@@ -162,10 +335,11 @@ def test_process_endpoint(video_paths=None):
         else:
             print_error(f"Status Code: {response.status_code}")
             try:
-                error_data = response.json()
+                # JSON response olabilir (hata durumu)
+                error_data = json.loads(response_content.decode('utf-8'))
                 print(f"Hata detayı: {json.dumps(error_data, indent=2, ensure_ascii=False)}")
             except:
-                print(f"Response: {response.text[:500]}")
+                print(f"Response: {response_content[:500].decode('utf-8', errors='ignore')}")
             return False
     except requests.exceptions.Timeout:
         print_error("İstek zaman aşımına uğradı. Video işleme çok uzun sürdü.")
