@@ -16,7 +16,7 @@ from datetime import datetime
 # API base URL
 # Render URL (production) veya local URL (development) kullanabilirsiniz
 # Environment variable'dan al veya varsayılan kullan
-BASE_URL = os.getenv("API_URL", "http://localhost:5000")
+BASE_URL = os.getenv("API_URL", "https://jumpcut.onrender.com")
 
 # Production test için:
 # BASE_URL = "https://jumpcut.onrender.com"
